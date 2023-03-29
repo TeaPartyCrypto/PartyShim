@@ -1,0 +1,3 @@
+export PRIVATE_KEY=0x123
+export RPC_URL=
+export CONTRACT_ADDRESS=
