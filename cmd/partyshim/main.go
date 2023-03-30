@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -98,7 +100,7 @@ func (e *PartyShim) mint(w http.ResponseWriter, r *http.Request) {
 	// Just notify me if you do.
 
 	// mint the transaction
-	err = e.completeMint(*mintRequest)
+	err, txid := e.completeMint(*mintRequest)
 	if err != nil {
 		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -108,7 +110,7 @@ func (e *PartyShim) mint(w http.ResponseWriter, r *http.Request) {
 	// return the signed transaction
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(mintRequest)
+	json.NewEncoder(w).Encode(txid)
 }
 
 // transfer will sign a transaction and return the signed transaction
@@ -140,7 +142,7 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Complete the transfer
-	txid, err := e.completeTransfer(*transferRequest, pk)
+	err, txid := e.completeTransfer(*transferRequest, pk)
 	if err != nil {
 		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -153,18 +155,18 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(txid)
 }
 
-func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKey) (*string, error) {
+func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKey) (error, *string) {
 	ctx := context.Background()
 	// initialize the Party Chain nodes.
 	partyclient, err := ethclient.Dial(e.RPCURL2)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
 	// check the connection status of the ethclinet
 	i, err := partyclient.PeerCount(ctx)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
 	fmt.Println("Party Chain Peer Count: ", i)
@@ -172,25 +174,25 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 	publicKey := privateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("error casting public key to ECDSA")
+		return errors.New("cannot assert type: publicKey is not of type *ecdsa.PublicKey"), nil
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 	nonce, err := partyclient.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
 	gasPrice, err := partyclient.SuggestGasPrice(context.Background())
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 	gasLimit := uint64(21000)
 
 	// set chain id
 	chainID, err := partyclient.ChainID(ctx)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 	toAddress := common.HexToAddress(mr.ToAddress)
 	var data []byte
@@ -198,23 +200,33 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 
 	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
 	if err := partyclient.SendTransaction(ctx, signedTx); err != nil {
-		return nil, err
+		return err, nil
 	}
 
 	fmt.Printf("transfer tx sent: %s on chain id: %s to address: %s from address: %s", signedTx.Hash().Hex(), chainID.String(), toAddress.String(), fromAddress.String())
 	transactionID := signedTx.Hash().Hex()
 
+	// wait for the transaction to be mined
+	for pending := true; pending; _, pending, err = partyclient.TransactionByHash(ctx, signedTx.Hash()) {
+		if err != nil {
+			return err, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Println("transfer tx mined")
+
 	// burn the minted tokens
 	err = e.burn(mr)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
-	return &transactionID, nil
+	return nil, &transactionID
 }
 
 // burn will burn the minted tokens
@@ -277,40 +289,40 @@ func (e *PartyShim) burn(mr MintRequest) error {
 }
 
 // completeMint will complete the minting of the transaction
-func (e *PartyShim) completeMint(mr MintRequest) error {
+func (e *PartyShim) completeMint(mr MintRequest) (error, string) {
 	ctx := context.Background()
 	// initialize the Party Chain nodes.
 	partyclient, err := ethclient.Dial(e.RPCURL)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 
 	publicKey := e.privateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
-		log.Fatal("error casting public key to ECDSA")
+		return err, ""
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 	nonce, err := partyclient.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 
 	gasPrice, err := partyclient.SuggestGasPrice(ctx)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 
 	// set chain id
 	chainID, err := partyclient.ChainID(ctx)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(e.privateKey, chainID)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0)      // in wei
@@ -321,7 +333,7 @@ func (e *PartyShim) completeMint(mr MintRequest) error {
 	contractaddress := common.HexToAddress(e.ContractAddress)
 	instance, err := bridge.NewBridge(contractaddress, partyclient)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 
 	toadr := common.HexToAddress(mr.ToAddress)
@@ -329,10 +341,20 @@ func (e *PartyShim) completeMint(mr MintRequest) error {
 	// Call the mint function on the contract
 	tx, err := instance.Mint(auth, toadr, mr.Amount)
 	if err != nil {
-		log.Fatal(err)
+		return err, ""
 	}
 
-	fmt.Printf("tx sent: %s", tx.Hash().Hex())
+	fmt.Printf("tx sent: %s \n", tx.Hash().Hex())
 
-	return nil
+	// wait for the transaction to be mined
+	for pending := true; pending; _, pending, err = partyclient.TransactionByHash(ctx, tx.Hash()) {
+		if err != nil {
+			return err, ""
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Println("tx mined")
+
+	return nil, tx.Hash().Hex()
 }
