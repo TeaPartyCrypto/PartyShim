@@ -46,6 +46,25 @@
 			{
 				"indexed": true,
 				"internalType": "address",
+				"name": "previousOwner",
+				"type": "address"
+			},
+			{
+				"indexed": true,
+				"internalType": "address",
+				"name": "newOwner",
+				"type": "address"
+			}
+		],
+		"name": "OwnershipTransferred",
+		"type": "event"
+	},
+	{
+		"anonymous": false,
+		"inputs": [
+			{
+				"indexed": true,
+				"internalType": "address",
 				"name": "from",
 				"type": "address"
 			},
@@ -64,6 +83,10 @@
 		],
 		"name": "Transfer",
 		"type": "event"
+	},
+	{
+		"stateMutability": "nonpayable",
+		"type": "fallback"
 	},
 	{
 		"inputs": [
@@ -285,7 +308,7 @@
 		"inputs": [
 			{
 				"internalType": "address",
-				"name": "recipient",
+				"name": "to",
 				"type": "address"
 			},
 			{
@@ -309,12 +332,12 @@
 		"inputs": [
 			{
 				"internalType": "address",
-				"name": "sender",
+				"name": "from",
 				"type": "address"
 			},
 			{
 				"internalType": "address",
-				"name": "recipient",
+				"name": "to",
 				"type": "address"
 			},
 			{
@@ -338,11 +361,11 @@
 		"inputs": [
 			{
 				"internalType": "address",
-				"name": "account",
+				"name": "newOwner",
 				"type": "address"
 			}
 		],
-		"name": "updateOwner",
+		"name": "transferOwnership",
 		"outputs": [],
 		"stateMutability": "nonpayable",
 		"type": "function"
