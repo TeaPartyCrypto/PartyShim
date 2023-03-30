@@ -16,7 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	wgrams "github.com/TeaPartyCrypto/PartyShim/wrappedgrams"
+	bridge "github.com/TeaPartyCrypto/PartyShim/contract"
 )
 
 func main() {
@@ -159,7 +159,72 @@ func (e *PartyShim) completeTransfer(mr MintRequest) (*string, error) {
 	fmt.Printf("tx sent: %s", signedTx.Hash().Hex())
 	transactionID := signedTx.Hash().Hex()
 
+	// burn the minted tokens
+	err = e.burn(mr)
+	if err != nil {
+		return nil, err
+	}
+
 	return &transactionID, nil
+}
+
+// burn will burn the minted tokens
+func (e *PartyShim) burn(mr MintRequest) error {
+	ctx := context.Background()
+	// initialize the Party Chain nodes.
+	partyclient, err := ethclient.Dial(e.RPCURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	publicKey := e.privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		log.Fatal("error casting public key to ECDSA")
+	}
+
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	nonce, err := partyclient.PendingNonceAt(ctx, fromAddress)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	gasPrice, err := partyclient.SuggestGasPrice(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// set chain id
+	chainID, err := partyclient.ChainID(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	auth, err := bind.NewKeyedTransactorWithChainID(e.privateKey, chainID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.Value = big.NewInt(0)      // in wei
+	auth.GasLimit = uint64(3000000) // in units
+	auth.GasPrice = gasPrice
+	auth.From = fromAddress
+
+	// initialize the contract
+	contract, err := bridge.NewBe(common.HexToAddress(e.ContractAddress), partyclient)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// burn the tokens
+	tx, err := contract.Burn(auth, common.HexToAddress(mr.ToAddress), &mr.Amount)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("tx sent: %s", tx.Hash().Hex())
+
+	return nil
 }
 
 // completeMint will complete the minting of the transaction
@@ -205,12 +270,15 @@ func (e *PartyShim) completeMint(mr MintRequest) error {
 	auth.From = fromAddress
 
 	contractaddress := common.HexToAddress(e.ContractAddress)
-	instance, err := wgrams.NewBe(contractaddress, partyclient)
+	instance, err := bridge.NewBe(contractaddress, partyclient)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tx, err := instance.Mint(auth, common.HexToAddress(mr.ToAddress), &mr.Amount)
+	toadr := common.HexToAddress(mr.ToAddress)
+
+	// Call the mint function on the contract
+	tx, err := instance.Mint(auth, toadr, &mr.Amount)
 	if err != nil {
 		log.Fatal(err)
 	}
