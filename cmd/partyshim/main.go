@@ -19,6 +19,19 @@ import (
 	bridge "github.com/TeaPartyCrypto/PartyShim/contract"
 )
 
+type MintRequest struct {
+	ToAddress string  `json:"toAddress"`
+	Amount    big.Int `json:"amount"`
+	FromPK    string  `json:"fromPK"`
+}
+
+type PartyShim struct {
+	// the private key of the contract owner
+	privateKey      *ecdsa.PrivateKey
+	RPCURL          string
+	ContractAddress string
+}
+
 func main() {
 	// import the private key from the environment variable
 	privateKey := os.Getenv("PRIVATE_KEY")
@@ -95,7 +108,7 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	// Just notify me if you do.
 
 	// Complete the transfer
-	txid, err := e.completeTransfer(*transferRequest)
+	txid, err := e.completeTransfer(*transferRequest, transferRequest.FromPK)
 	if err != nil {
 		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -108,10 +121,16 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(txid)
 }
 
-func (e *PartyShim) completeTransfer(mr MintRequest) (*string, error) {
+func (e *PartyShim) completeTransfer(mr MintRequest, privateKey string) (*string, error) {
 	// Contract owners, feel free to add additional logic here
 	// to farther validate the transaction before signing it
 	// Just notify me if you do.
+
+	// convert the privateKey string to ecdsa.PrivateKey
+	pkECDSA, err := crypto.HexToECDSA(privateKey)
+	if err != nil {
+		return nil, err
+	}
 
 	ctx := context.Background()
 	// initialize the Party Chain nodes.
@@ -120,7 +139,7 @@ func (e *PartyShim) completeTransfer(mr MintRequest) (*string, error) {
 		return nil, err
 	}
 
-	publicKey := e.privateKey.Public()
+	publicKey := pkECDSA.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("error casting public key to ECDSA")
@@ -147,7 +166,7 @@ func (e *PartyShim) completeTransfer(mr MintRequest) (*string, error) {
 	var data []byte
 	tx := types.NewTransaction(nonce, toAddress, &mr.Amount, gasLimit, gasPrice, data)
 
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), e.privateKey)
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), pkECDSA)
 	if err != nil {
 		return nil, err
 	}
@@ -211,7 +230,7 @@ func (e *PartyShim) burn(mr MintRequest) error {
 	auth.From = fromAddress
 
 	// initialize the contract
-	contract, err := bridge.NewBe(common.HexToAddress(e.ContractAddress), partyclient)
+	contract, err := bridge.NewBridge(common.HexToAddress(e.ContractAddress), partyclient)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -270,7 +289,7 @@ func (e *PartyShim) completeMint(mr MintRequest) error {
 	auth.From = fromAddress
 
 	contractaddress := common.HexToAddress(e.ContractAddress)
-	instance, err := bridge.NewBe(contractaddress, partyclient)
+	instance, err := bridge.NewBridge(contractaddress, partyclient)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -286,16 +305,4 @@ func (e *PartyShim) completeMint(mr MintRequest) error {
 	fmt.Printf("tx sent: %s", tx.Hash().Hex())
 
 	return nil
-}
-
-type MintRequest struct {
-	ToAddress string  `json:"toAddress"`
-	Amount    big.Int `json:"amount"`
-}
-
-type PartyShim struct {
-	// the private key of the contract owner
-	privateKey      *ecdsa.PrivateKey
-	RPCURL          string
-	ContractAddress string
 }
