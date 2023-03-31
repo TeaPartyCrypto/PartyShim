@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net/http"
@@ -89,10 +91,20 @@ func main() {
 		log.Fatalf("failed to load certificate and private key: %v", err)
 	}
 
-	// Create a TLS configuration
+	// Load the CA certificate used to sign the client certificates.
+	caCert, err := ioutil.ReadFile(CACertLocation + "/cert.pem")
+	if err != nil {
+		log.Fatalf("failed to read CA certificate: %v", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	caCertPool.AppendCertsFromPEM(caCert)
+
+	// Configure TLS options.
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    caCertPool,
 	}
 
 	// Create a server with the TLS configuration
