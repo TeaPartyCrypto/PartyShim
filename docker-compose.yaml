@@ -1,5 +1,4 @@
 services:
-
    partyshim:
       image: gcr.io/mineonlium/partyshim
       ports:
