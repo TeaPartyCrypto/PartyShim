@@ -37,8 +37,6 @@ Follow the steps below to integrate a new chain with `PartyBridge`:
 1/ PR this repository with the changes. 
 
 
-
-
 ## Development
 
 Example request to the `/mint` route: 
