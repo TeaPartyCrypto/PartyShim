@@ -1,0 +1,10 @@
+services:
+   partyshim:
+      image: gcr.io/mineonlium/partyshim
+      ports:
+        - "8080:8080"
+      environment:
+        - "PRIVATE_KEY="
+        - "DEFAULT_PAYMENT_PRIVATE_KEY="
+        - "RPC_URL="
+        - "CONTRACT_ADDRESS="

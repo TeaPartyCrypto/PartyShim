@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    name: partyshim
+    component: cache
+  name: partyshim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: partyshim
+  template:
+    metadata:
+      labels:
+        name: partyshim
+        component: cache
+    spec:
+      containers:
+      - name: partyshim
+        image: gcr.io/mineonlium/partyshim@sha256:543eaf5de1144c9facbc091b1f1e85c9dd365d6826ace5cbe1a805d92e1d7d2b
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: interface
+        env:
+        - name: PRIVATE_KEY
+          value: ""
+        - name: DEFAULT_PAYMENT_PRIVATE_KEY
+          value: ""
+        - name: RPC_URL
+          value: ""
+        - name: RPC_URL2
+          value: ""
+        - name: CONTRACT_ADDRESS
+          value: ""
+
+--- 
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: partyshim
+spec:
+  selector:
+    app: partyshim
+  ports:
+    - port: 8080
+      protocol: TCP
+      targetPort: 8080
+      name: interface
+status:
+  loadBalancer: {}

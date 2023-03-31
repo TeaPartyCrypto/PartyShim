@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
@@ -16,8 +18,23 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	wgrams "github.com/TeaPartyCrypto/PartyShim/wrappedgrams"
+	bridge "github.com/TeaPartyCrypto/PartyShim/contract"
 )
+
+type MintRequest struct {
+	ToAddress string   `json:"toAddress"`
+	Amount    *big.Int `json:"amount"`
+	FromPK    string   `json:"fromPK"`
+}
+
+type PartyShim struct {
+	// the private key of the contract owner
+	privateKey        *ecdsa.PrivateKey
+	defaultPaymentKey *ecdsa.PrivateKey
+	RPCURL            string
+	RPCURL2           string
+	ContractAddress   string
+}
 
 func main() {
 	// import the private key from the environment variable
@@ -25,9 +42,17 @@ func main() {
 	if privateKey == "" {
 		panic("PRIVATE_KEY environment variable not set")
 	}
+	defaultPaymentPK := os.Getenv("DEFAULT_PAYMENT_PRIVATE_KEY")
+	if defaultPaymentPK == "" {
+		panic("DEFAULT_PAYMENT_PRIVATE_KEY environment variable not set")
+	}
 	RPCURL := os.Getenv("RPC_URL")
 	if RPCURL == "" {
 		panic("RPC_URL environment variable not set")
+	}
+	RPCURL2 := os.Getenv("RPC_URL2")
+	if RPCURL2 == "" {
+		panic("RPC_URL2 environment variable not set")
 	}
 	ContractAddress := os.Getenv("CONTRACT_ADDRESS")
 	if ContractAddress == "" {
@@ -40,10 +65,18 @@ func main() {
 		fmt.Println(err)
 	}
 
+	// create a new ecdsa private key from the plain text private key
+	defaultPaymentPKECDSA, err := crypto.HexToECDSA(defaultPaymentPK)
+	if err != nil {
+		fmt.Println(err)
+	}
+
 	ps := &PartyShim{
-		privateKey:      pkECDSA,
-		RPCURL:          RPCURL,
-		ContractAddress: ContractAddress,
+		privateKey:        pkECDSA,
+		defaultPaymentKey: defaultPaymentPKECDSA,
+		RPCURL:            RPCURL,
+		RPCURL2:           RPCURL2,
+		ContractAddress:   ContractAddress,
 	}
 
 	// start an http server
@@ -67,7 +100,7 @@ func (e *PartyShim) mint(w http.ResponseWriter, r *http.Request) {
 	// Just notify me if you do.
 
 	// mint the transaction
-	err = e.completeMint(*mintRequest)
+	err, txid := e.completeMint(*mintRequest)
 	if err != nil {
 		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -77,7 +110,7 @@ func (e *PartyShim) mint(w http.ResponseWriter, r *http.Request) {
 	// return the signed transaction
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(mintRequest)
+	json.NewEncoder(w).Encode(txid)
 }
 
 // transfer will sign a transaction and return the signed transaction
@@ -94,8 +127,22 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	// to farther validate the transaction before signing it
 	// Just notify me if you do.
 
+	var pk *ecdsa.PrivateKey
+	if transferRequest.FromPK != "" {
+		// convert the privateKey string to ecdsa.PrivateKey
+		pkECDSA, err := crypto.HexToECDSA(transferRequest.FromPK)
+		if err != nil {
+			fmt.Println(err)
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+		}
+		pk = pkECDSA
+	} else {
+		pk = e.defaultPaymentKey
+	}
+
 	// Complete the transfer
-	txid, err := e.completeTransfer(*transferRequest)
+	err, txid := e.completeTransfer(*transferRequest, pk)
 	if err != nil {
 		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -108,62 +155,82 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(txid)
 }
 
-func (e *PartyShim) completeTransfer(mr MintRequest) (*string, error) {
-	// Contract owners, feel free to add additional logic here
-	// to farther validate the transaction before signing it
-	// Just notify me if you do.
-
+func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKey) (error, *string) {
 	ctx := context.Background()
 	// initialize the Party Chain nodes.
-	partyclient, err := ethclient.Dial(e.RPCURL)
+	partyclient, err := ethclient.Dial(e.RPCURL2)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
-	publicKey := e.privateKey.Public()
+	// check the connection status of the ethclinet
+	i, err := partyclient.PeerCount(ctx)
+	if err != nil {
+		return err, nil
+	}
+
+	fmt.Println("Party Chain Peer Count: ", i)
+
+	publicKey := privateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return nil, fmt.Errorf("error casting public key to ECDSA")
+		return errors.New("cannot assert type: publicKey is not of type *ecdsa.PublicKey"), nil
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
 	nonce, err := partyclient.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
-	gasPrice, err := partyclient.SuggestGasPrice(ctx)
+	gasPrice, err := partyclient.SuggestGasPrice(context.Background())
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 	gasLimit := uint64(21000)
 
 	// set chain id
 	chainID, err := partyclient.ChainID(ctx)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 	toAddress := common.HexToAddress(mr.ToAddress)
 	var data []byte
-	tx := types.NewTransaction(nonce, toAddress, &mr.Amount, gasLimit, gasPrice, data)
+	tx := types.NewTransaction(nonce, toAddress, mr.Amount, gasLimit, gasPrice, data)
 
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), e.privateKey)
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
 	if err != nil {
-		return nil, err
+		return err, nil
 	}
 
 	if err := partyclient.SendTransaction(ctx, signedTx); err != nil {
-		return nil, err
+		return err, nil
 	}
 
-	fmt.Printf("tx sent: %s", signedTx.Hash().Hex())
+	fmt.Printf("transfer tx sent: %s on chain id: %s to address: %s from address: %s", signedTx.Hash().Hex(), chainID.String(), toAddress.String(), fromAddress.String())
 	transactionID := signedTx.Hash().Hex()
 
-	return &transactionID, nil
+	// wait for the transaction to be mined
+	for pending := true; pending; _, pending, err = partyclient.TransactionByHash(ctx, signedTx.Hash()) {
+		if err != nil {
+			return err, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Println("transfer tx mined")
+
+	// burn the minted tokens
+	err = e.burn(mr)
+	if err != nil {
+		return err, nil
+	}
+
+	return nil, &transactionID
 }
 
-// completeMint will complete the minting of the transaction
-func (e *PartyShim) completeMint(mr MintRequest) error {
+// burn will burn the minted tokens
+func (e *PartyShim) burn(mr MintRequest) error {
 	ctx := context.Background()
 	// initialize the Party Chain nodes.
 	partyclient, err := ethclient.Dial(e.RPCURL)
@@ -204,30 +271,90 @@ func (e *PartyShim) completeMint(mr MintRequest) error {
 	auth.GasPrice = gasPrice
 	auth.From = fromAddress
 
-	contractaddress := common.HexToAddress(e.ContractAddress)
-	instance, err := wgrams.NewBe(contractaddress, partyclient)
+	// initialize the contract
+	contract, err := bridge.NewBridge(common.HexToAddress(e.ContractAddress), partyclient)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	tx, err := instance.Mint(auth, common.HexToAddress(mr.ToAddress), &mr.Amount)
+	// burn the tokens
+	tx, err := contract.Burn(auth, common.HexToAddress(mr.ToAddress), mr.Amount)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("tx sent: %s", tx.Hash().Hex())
+	fmt.Printf("burn tx sent: %s", tx.Hash().Hex())
 
 	return nil
 }
 
-type MintRequest struct {
-	ToAddress string  `json:"toAddress"`
-	Amount    big.Int `json:"amount"`
-}
+// completeMint will complete the minting of the transaction
+func (e *PartyShim) completeMint(mr MintRequest) (error, string) {
+	ctx := context.Background()
+	// initialize the Party Chain nodes.
+	partyclient, err := ethclient.Dial(e.RPCURL)
+	if err != nil {
+		return err, ""
+	}
 
-type PartyShim struct {
-	// the private key of the contract owner
-	privateKey      *ecdsa.PrivateKey
-	RPCURL          string
-	ContractAddress string
+	publicKey := e.privateKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return err, ""
+	}
+
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	nonce, err := partyclient.PendingNonceAt(ctx, fromAddress)
+	if err != nil {
+		return err, ""
+	}
+
+	gasPrice, err := partyclient.SuggestGasPrice(ctx)
+	if err != nil {
+		return err, ""
+	}
+
+	// set chain id
+	chainID, err := partyclient.ChainID(ctx)
+	if err != nil {
+		return err, ""
+	}
+
+	auth, err := bind.NewKeyedTransactorWithChainID(e.privateKey, chainID)
+	if err != nil {
+		return err, ""
+	}
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.Value = big.NewInt(0)      // in wei
+	auth.GasLimit = uint64(3000000) // in units
+	auth.GasPrice = gasPrice
+	auth.From = fromAddress
+
+	contractaddress := common.HexToAddress(e.ContractAddress)
+	instance, err := bridge.NewBridge(contractaddress, partyclient)
+	if err != nil {
+		return err, ""
+	}
+
+	toadr := common.HexToAddress(mr.ToAddress)
+
+	// Call the mint function on the contract
+	tx, err := instance.Mint(auth, toadr, mr.Amount)
+	if err != nil {
+		return err, ""
+	}
+
+	fmt.Printf("tx sent: %s \n", tx.Hash().Hex())
+
+	// wait for the transaction to be mined
+	for pending := true; pending; _, pending, err = partyclient.TransactionByHash(ctx, tx.Hash()) {
+		if err != nil {
+			return err, ""
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Println("tx mined")
+
+	return nil, tx.Hash().Hex()
 }
