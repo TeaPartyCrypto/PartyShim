@@ -43,10 +43,13 @@ Follow the steps below to integrate a new chain with `PartyBridge`:
 
 Example request to the `/mint` route: 
 ```
-curl -v "http://0.0.0.0:8080/mint" \
+curl -v "https://0.0.0.0:8080/mint" \
        -X POST \
+       -k \
        -H "Content-Type: application/json" \
-       -d '{"amount": 10000, "toAddress":"0x5dd4039c32F6EEF427D6F67600D8920c9631D59D"}'
+       -d '{"amount": 10000, "toAddress":"0x5dd4039c32F6EEF427D6F67600D8920c9631D59D"}' \
+       --cert ./cert.pem \
+       --key ./key_pkcs1.pem
 ```
 
 
@@ -55,8 +58,11 @@ Example request to the `/transfer` route:
 ```
 curl -v "http://0.0.0.0:8080/transfer" \
        -X POST \
+       -k \
        -H "Content-Type: application/json" \
-       -d '{"amount": 10000, "toAddress":"0x9cA67FFE69698d963A393E9338aD3BcfD2CEa02e","fromPK":<pk of funders address>}'
+       -d '{"amount": 10000, "toAddress":"0x9cA67FFE69698d963A393E9338aD3BcfD2CEa02e","fromPK":<pk of funders address>}' \
+       --cert ./cert.pem \
+       --key ./key_pkcs1.pem
 ```
 
 
