@@ -1,3 +1,7 @@
+# create your cert and key_pkcs1 kubernetes secrets.
+# kubectl create secret generic tls-secret --from-file=cert.pem=path/to/cert.pem --from-file=key_pkcs1.pem=path/to/key_pkcs1.pem
+
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,6 +38,16 @@ spec:
           value: ""
         - name: CONTRACT_ADDRESS
           value: ""
+        - name: SHIM_CA_CERT
+          value: "/etc/tls"
+        volumeMounts:
+        - name: tls-secret
+          mountPath: "/etc/tls"
+          readOnly: true
+      volumes:
+      - name: tls-secret
+        secret:
+          secretName: tls-secret
 
 --- 
 
