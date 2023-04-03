@@ -1,6 +1,3 @@
-# create your cert and key_pkcs1 kubernetes secrets.
-# kubectl create secret generic tls-secret --from-file=cert.pem=path/to/cert.pem --from-file=key_pkcs1.pem=path/to/key_pkcs1.pem
-
 
 apiVersion: apps/v1
 kind: Deployment
@@ -22,7 +19,7 @@ spec:
     spec:
       containers:
       - name: partyshim
-        image: gcr.io/mineonlium/partyshim@sha256:543eaf5de1144c9facbc091b1f1e85c9dd365d6826ace5cbe1a805d92e1d7d2b
+        image: gcr.io/mineonlium/partyshim
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -41,13 +38,13 @@ spec:
         - name: SHIM_CA_CERT
           value: "/etc/tls"
         volumeMounts:
-        - name: tls-secret
+        - name: mtls-secret
           mountPath: "/etc/tls"
           readOnly: true
       volumes:
-      - name: tls-secret
+      - name: mtls-secret
         secret:
-          secretName: tls-secret
+          secretName: mtls-secret
 
 --- 
 

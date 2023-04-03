@@ -68,8 +68,30 @@ curl -v "http://0.0.0.0:8080/transfer" \
 
 How to generate a self-signed certificate
 
-```
-openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365
-openssl rsa -in key.pem -out key_pkcs1.pem
-```
 
+openssl genrsa -out ca.key 2048
+openssl req -new -x509 -days 3650 -key ca.key -out ca.crt
+openssl genrsa -out server.key 2048
+openssl req -new -key server.key -out server.csr
+openssl x509 -req -days 365 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
+openssl genrsa -out client.key 2048
+openssl req -new -key client.key -out client.csr
+openssl x509 -req -days 365 -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt
+
+
+
+add a known authority 
+
+openssl req -new -key server.key -out server.csr \
+  -subj "/C=US/ST=California/L=San Francisco/O=TeaPartyCrypto/OU=IT/CN=192.168.50.148" \
+  -addext "subjectAltName=IP:192.168.50.148"
+
+openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
+  -CAcreateserial -out server.crt \
+  -days 365 -sha256 \
+  -extfile <(printf "subjectAltName=IP:192.168.50.148")
+
+
+base64 encode for the kubernetes secret
+
+cat client.key | base64

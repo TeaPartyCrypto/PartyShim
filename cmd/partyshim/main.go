@@ -86,13 +86,13 @@ func main() {
 		ContractAddress:   ContractAddress,
 	}
 	// Read the certificate and private key files
-	cert, err := tls.LoadX509KeyPair(CACertLocation+"/cert.pem", CACertLocation+"/key_pkcs1.pem")
+	cert, err := tls.LoadX509KeyPair(CACertLocation+"/server.crt", CACertLocation+"/server.key")
 	if err != nil {
 		log.Fatalf("failed to load certificate and private key: %v", err)
 	}
 
 	// Load the CA certificate used to sign the client certificates.
-	caCert, err := ioutil.ReadFile(CACertLocation + "/cert.pem")
+	caCert, err := ioutil.ReadFile(CACertLocation + "/ca.crt")
 	if err != nil {
 		log.Fatalf("failed to read CA certificate: %v", err)
 	}
