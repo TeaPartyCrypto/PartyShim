@@ -5,7 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
-contract TokenBase is ERC20, Ownable {
+contract PartyBridge is ERC20, Ownable {
     using SafeMath for uint256;
 
     uint256 private _cap;
@@ -14,10 +14,11 @@ contract TokenBase is ERC20, Ownable {
     mapping(address => uint256) private _dailyMintedAmounts;
 
     event CapSet(uint256 cap);
+    event DailyCapSet(uint256 dailyMintCap);
 
-    constructor(string memory name, string memory symbol, uint256 cap, uint256 dailyMintCap) ERC20(name, symbol) {
-        _cap = cap;
-        _dailyMintCap = dailyMintCap;
+    constructor(string memory name, string memory symbol, uint256 initialCap, uint256 initialDailyMintCap) ERC20(name, symbol) {
+        _cap = initialCap;
+        _dailyMintCap = initialDailyMintCap;
         _lastMintTimestamp = block.timestamp;
     }
 
@@ -38,7 +39,6 @@ contract TokenBase is ERC20, Ownable {
     }
 
     function mint(address account, uint256 amount) external onlyOwner {
-        require(block.timestamp >= _lastMintTimestamp.add(1 days), "TokenBase: minting not allowed yet today");
         require(_dailyMintedAmounts[msg.sender].add(amount) <= _dailyMintCap, "TokenBase: daily mint cap exceeded");
         require(totalSupply().add(amount) <= _cap, "TokenBase: cap exceeded");
         _mint(account, amount);
@@ -46,9 +46,18 @@ contract TokenBase is ERC20, Ownable {
         _lastMintTimestamp = block.timestamp;
     }
 
-    function setCap(uint256 cap) external onlyOwner {
-        _cap = cap;
-        emit CapSet(cap);
+    function burn(address account, uint256 amount) external onlyOwner { // Added burn method
+        _burn(account, amount);
+    }
+
+    function setCap(uint256 newCap) external onlyOwner {
+        _cap = newCap;
+        emit CapSet(newCap);
+    }
+
+    function setNewDailyMintCap(uint256 newCap) external onlyOwner {
+        _dailyMintCap = newCap;
+        emit DailyCapSet(newCap);
     }
 
     fallback() external {

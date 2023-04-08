@@ -21,7 +21,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 
-	bridge "github.com/TeaPartyCrypto/PartyShim/contract"
+	bridge "github.com/TeaPartyCrypto/PartyShim/contract/v2"
 )
 
 type MintRequest struct {
@@ -103,8 +103,8 @@ func main() {
 	// Configure TLS options.
 	tlsConfig := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		ClientAuth:   tls.RequireAndVerifyClientCert,
-		ClientCAs:    caCertPool,
+		// ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs: caCertPool,
 	}
 
 	// Create a server with the TLS configuration
@@ -194,7 +194,7 @@ func (e *PartyShim) completeMint(mr MintRequest) (error, string) {
 	auth.From = fromAddress
 
 	contractaddress := common.HexToAddress(e.ContractAddress)
-	instance, err := bridge.NewBridge(contractaddress, partyclient)
+	instance, err := bridge.NewPartyBridge(contractaddress, partyclient)
 	if err != nil {
 		return err, ""
 	}
@@ -231,6 +231,8 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	fmt.Printf("transfer request: %+v", transferRequest)
 
 	// Contract owners, feel free to add additional logic here
 	// to farther validate the transaction before signing it
@@ -279,7 +281,7 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 		return err, nil
 	}
 
-	fmt.Println("Party Chain Peer Count: ", i)
+	fmt.Println("Peer Count: ", i)
 
 	publicKey := privateKey.Public()
 	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
@@ -298,6 +300,14 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 		return err, nil
 	}
 	gasLimit := uint64(21000)
+	fmt.Println("deducting for gas")
+	gasLimitBigInt := new(big.Int).SetUint64(gasLimit)
+	gasPriceBigInt := new(big.Int).SetUint64(gasPrice.Uint64())
+	// Perform the multiplication: gasLimitBigInt * gasPriceBigInt
+	gasCost := new(big.Int).Mul(gasLimitBigInt, gasPriceBigInt)
+	// Perform the subtraction: mr.Amount - gasCost
+	newAmt := new(big.Int).Sub(mr.Amount, gasCost)
+	fmt.Println("new amount: ", newAmt)
 
 	// set chain id
 	chainID, err := partyclient.ChainID(ctx)
@@ -306,7 +316,7 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 	}
 	toAddress := common.HexToAddress(mr.ToAddress)
 	var data []byte
-	tx := types.NewTransaction(nonce, toAddress, mr.Amount, gasLimit, gasPrice, data)
+	tx := types.NewTransaction(nonce, toAddress, newAmt, gasLimit, gasPrice, data)
 
 	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
 	if err != nil {
@@ -382,7 +392,7 @@ func (e *PartyShim) burn(mr MintRequest) error {
 	auth.From = fromAddress
 
 	// initialize the contract
-	contract, err := bridge.NewBridge(common.HexToAddress(e.ContractAddress), partyclient)
+	contract, err := bridge.NewPartyBridge(common.HexToAddress(e.ContractAddress), partyclient)
 	if err != nil {
 		log.Fatal(err)
 	}

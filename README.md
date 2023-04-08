@@ -48,21 +48,29 @@ curl -v "https://0.0.0.0:8080/mint" \
        -k \
        -H "Content-Type: application/json" \
        -d '{"amount": 10000, "toAddress":"0x5dd4039c32F6EEF427D6F67600D8920c9631D59D"}' \
-       --cert ./cert.pem \
-       --key ./key_pkcs1.pem
+       --cert ./client.crt \
+       --key ./key.crt
 ```
 
 
 Example request to the `/transfer` route:
 
 ```
-curl -v "http://0.0.0.0:8080/transfer" \
+curl -v "https://0.0.0.0:8080/transfer" \
        -X POST \
        -k \
        -H "Content-Type: application/json" \
        -d '{"amount": 10000, "toAddress":"0x9cA67FFE69698d963A393E9338aD3BcfD2CEa02e","fromPK":<pk of funders address>}' \
-       --cert ./cert.pem \
-       --key ./key_pkcs1.pem
+       --cert ./client.crt \
+       --key ./client.key
+
+curl -v "https://0.0.0.0:8080/transfer" \
+       -X POST \
+       -k \
+       -H "Content-Type: application/json" \
+       -d '{"amount": 10000, "toAddress":"0x5bbfa5724260Cb175cB39b24802A04c3bfe72eb3"}' \
+       --cert ./client.crt \
+       --key ./client.key
 ```
 
 
@@ -83,15 +91,28 @@ openssl x509 -req -days 365 -in client.csr -CA ca.crt -CAkey ca.key -CAcreateser
 add a known authority 
 
 openssl req -new -key server.key -out server.csr \
-  -subj "/C=US/ST=California/L=San Francisco/O=TeaPartyCrypto/OU=IT/CN=192.168.50.148" \
-  -addext "subjectAltName=IP:192.168.50.148"
+  -subj "/C=US/ST=California/L=San Francisco/O=TeaPartyCrypto/OU=IT/CN=192.168.50.26" \
+  -addext "subjectAltName=IP:192.168.50.26" \
+  -addext "subjectAltName=IP:192.168.50.25" 
+
 
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
   -CAcreateserial -out server.crt \
   -days 365 -sha256 \
-  -extfile <(printf "subjectAltName=IP:192.168.50.148")
+  -extfile <(printf "subjectAltName=IP:192.168.50.26,IP:192.168.50.25")
+
+
+
+
+
+
 
 
 base64 encode for the kubernetes secret
 
+cat ca.crt | base64
+cat client.crt | base64
 cat client.key | base64
+cat server.crt | base64
+cat server.key | base64
+
