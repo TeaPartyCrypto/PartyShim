@@ -74,37 +74,63 @@ curl -v "https://0.0.0.0:8080/transfer" \
 ```
 
 
-How to generate a self-signed certificate
 
 
+
+
+GPT suggestion for creating and adding authority to certs
+
+First, create a configuration file named openssl.cnf with the following content:
+
+```
+[ req ]
+default_bits        = 2048
+default_keyfile     = server-key.pem
+distinguished_name  = req_distinguished_name
+req_extensions      = req_ext
+
+[ req_distinguished_name ]
+countryName                 = AU
+stateOrProvinceName         = Some-State
+localityName               = City
+organizationName           = company
+commonName                 = Internet Widgits Pty Ltd
+commonName_max             = 64
+
+[ req_ext ]
+subjectAltName          = @alt_names
+
+[alt_names]
+DNS.1   = partyshim-wgrams
+DNS.2   = partyshim-partychain-wocta
+```
+
+
+Make sure to replace the IP.1 and IP.2 values with the correct IP addresses.
+
+Now, use the following commands to generate the self-signed certificate and add the subject alternative names:
+```
+# Generate the CA key and certificate
 openssl genrsa -out ca.key 2048
 openssl req -new -x509 -days 3650 -key ca.key -out ca.crt
+
+# Generate the server key
 openssl genrsa -out server.key 2048
-openssl req -new -key server.key -out server.csr
-openssl x509 -req -days 365 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt
+
+# Create the server CSR using the configuration file
+openssl req -new -key server.key -out server.csr -config openssl.cnf
+
+# Sign the server CSR with the CA key and certificate, using the configuration file
+openssl x509 -req -days 365 -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -extensions req_ext -extfile openssl.cnf
+
+
+# Generate the client key and certificate
 openssl genrsa -out client.key 2048
 openssl req -new -key client.key -out client.csr
 openssl x509 -req -days 365 -in client.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out client.crt
+```
 
-
-
-add a known authority 
-
-openssl req -new -key server.key -out server.csr \
-  -subj "/C=US/ST=California/L=San Francisco/O=TeaPartyCrypto/OU=IT/CN=192.168.50.26" \
-  -addext "subjectAltName=IP:192.168.50.26" \
-  -addext "subjectAltName=IP:192.168.50.25" 
-
-
-openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key \
-  -CAcreateserial -out server.crt \
-  -days 365 -sha256 \
-  -extfile <(printf "subjectAltName=IP:192.168.50.26,IP:192.168.50.25")
-
-
-
-
-
+After following these steps, your server certificate should include the subject alternative names, and the connection should work as expected.
 
 
 
