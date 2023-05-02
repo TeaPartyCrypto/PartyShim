@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -188,8 +189,8 @@ func (e *PartyShim) completeMint(mr MintRequest) (error, string) {
 		return err, ""
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)      // in wei
-	auth.GasLimit = uint64(3000000) // in units
+	auth.Value = big.NewInt(0)     // in wei
+	auth.GasLimit = uint64(100000) // in units
 	auth.GasPrice = gasPrice
 	auth.From = fromAddress
 
@@ -309,6 +310,11 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 	newAmt := new(big.Int).Sub(mr.Amount, gasCost)
 	fmt.Println("new amount: ", newAmt)
 
+	// check that the amount is not negative
+	if newAmt.Cmp(big.NewInt(0)) == -1 {
+		return errors.New("insufficient funds for gas * price + value"), nil
+	}
+
 	// set chain id
 	chainID, err := partyclient.ChainID(ctx)
 	if err != nil {
@@ -323,7 +329,13 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 		return err, nil
 	}
 
-	if err := partyclient.SendTransaction(ctx, signedTx); err != nil {
+	err = partyclient.SendTransaction(ctx, signedTx)
+	if err != nil {
+		// Check if the error is due to insufficient funds
+		if strings.Contains(err.Error(), "insufficient funds for gas * price + value") && privateKey != e.defaultPaymentKey {
+			fmt.Println("Insufficient funds, retrying with default payment private key")
+			return e.completeTransfer(mr, e.defaultPaymentKey)
+		}
 		return err, nil
 	}
 
