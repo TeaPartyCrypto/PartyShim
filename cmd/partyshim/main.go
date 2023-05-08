@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -239,22 +240,22 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	// to farther validate the transaction before signing it
 	// Just notify me if you do.
 
-	var pk *ecdsa.PrivateKey
-	if transferRequest.FromPK != "" {
-		// convert the privateKey string to ecdsa.PrivateKey
-		pkECDSA, err := crypto.HexToECDSA(transferRequest.FromPK)
-		if err != nil {
-			fmt.Println(err)
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
-		}
-		pk = pkECDSA
-	} else {
-		pk = e.defaultPaymentKey
-	}
+	// var pk *ecdsa.PrivateKey
+	// if transferRequest.FromPK != "" {
+	// 	// convert the privateKey string to ecdsa.PrivateKey
+	// 	pkECDSA, err := crypto.HexToECDSA(transferRequest.FromPK)
+	// 	if err != nil {
+	// 		fmt.Println(err)
+	// 		w.WriteHeader(http.StatusInternalServerError)
+	// 		w.Write([]byte(err.Error()))
+	// 	}
+	// 	pk = pkECDSA
+	// } else {
+	// 	pk = e.defaultPaymentKey
+	// }
 
 	// Complete the transfer
-	err, txid := e.completeTransfer(*transferRequest, pk)
+	err, txid := e.completeTransferByPayingMaxAmountPossibleFromAccount(*transferRequest)
 	if err != nil {
 		fmt.Println(err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -267,8 +268,19 @@ func (e *PartyShim) transfer(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(txid)
 }
 
-// completeTransfer completes the un-wrapping process of a coin
 func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKey) (error, *string) {
+	// amount := new(big.Int)
+	// twoPercent := new(big.Float).SetFloat64(0.98)
+	// amountFloat := new(big.Float).SetInt(mr.Amount)
+	// newAmountFloat := new(big.Float).Mul(amountFloat, twoPercent)
+
+	// // Convert the result back to a big.Int
+	// newAmountFloat.Int(amount)
+
+	// fmt.Printf("Amount after deducting 2%%: %s\n", amount.String())
+
+	// mr.Amount = amount
+
 	ctx := context.Background()
 	// initialize the Party Chain nodes.
 	partyclient, err := ethclient.Dial(e.RPCURL2)
@@ -276,7 +288,7 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 		return err, nil
 	}
 
-	// check the connection status of the ethclinet
+	// check the connection status of the ethclient
 	i, err := partyclient.PeerCount(ctx)
 	if err != nil {
 		return err, nil
@@ -296,23 +308,49 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 		return err, nil
 	}
 
+	// Get suggested gas price
 	gasPrice, err := partyclient.SuggestGasPrice(context.Background())
 	if err != nil {
 		return err, nil
 	}
-	gasLimit := uint64(21000)
-	fmt.Println("deducting for gas")
-	gasLimitBigInt := new(big.Int).SetUint64(gasLimit)
+
+	toadr := common.HexToAddress(mr.ToAddress)
+
+	// Estimate gas limit for the specific transaction
+	msg := ethereum.CallMsg{
+		From:     fromAddress,
+		To:       &toadr,
+		Value:    mr.Amount,
+		Data:     []byte{},
+		GasPrice: gasPrice,
+	}
+
+	estimatedGasLimit, err := partyclient.EstimateGas(ctx, msg)
+	if err != nil {
+		return err, nil
+	}
+
+	// Add a buffer to the estimated gas limit (e.g., 1%)
+	bufferedGasLimit := uint64(float64(estimatedGasLimit) * 2.6)
+
+	fmt.Println("estimated gas limit: ", estimatedGasLimit)
+	fmt.Println("buffered gas limit: ", bufferedGasLimit)
+	fmt.Println("gas price: ", gasPrice)
+
+	// Calculate gas cost
+	gasLimitBigInt := new(big.Int).SetUint64(bufferedGasLimit)
 	gasPriceBigInt := new(big.Int).SetUint64(gasPrice.Uint64())
-	// Perform the multiplication: gasLimitBigInt * gasPriceBigInt
 	gasCost := new(big.Int).Mul(gasLimitBigInt, gasPriceBigInt)
-	// Perform the subtraction: mr.Amount - gasCost
+
+	fmt.Println("gas cost: ", gasCost)
+
+	// Deduct gas cost from the amount
 	newAmt := new(big.Int).Sub(mr.Amount, gasCost)
 	fmt.Println("new amount: ", newAmt)
 
-	// check that the amount is not negative
-	if newAmt.Cmp(big.NewInt(0)) == -1 {
-		return errors.New("insufficient funds for gas * price + value"), nil
+	if newAmt.Cmp(big.NewInt(0)) < 0 {
+		fmt.Println("Insufficient funds, retrying with default payment private key")
+		return e.completeTransferWithPrivateKey(mr)
 	}
 
 	// set chain id
@@ -322,7 +360,7 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 	}
 	toAddress := common.HexToAddress(mr.ToAddress)
 	var data []byte
-	tx := types.NewTransaction(nonce, toAddress, newAmt, gasLimit, gasPrice, data)
+	tx := types.NewTransaction(nonce, toAddress, newAmt, bufferedGasLimit, gasPrice, data)
 
 	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
 	if err != nil {
@@ -332,9 +370,25 @@ func (e *PartyShim) completeTransfer(mr MintRequest, privateKey *ecdsa.PrivateKe
 	err = partyclient.SendTransaction(ctx, signedTx)
 	if err != nil {
 		// Check if the error is due to insufficient funds
-		if strings.Contains(err.Error(), "insufficient funds for gas * price + value") && privateKey != e.defaultPaymentKey {
-			fmt.Println("Insufficient funds, retrying with default payment private key")
-			return e.completeTransfer(mr, e.defaultPaymentKey)
+		if strings.Contains(err.Error(), "insufficient funds") && privateKey != e.defaultPaymentKey {
+			// Get the balance of the fromAddress
+			balance, err := partyclient.BalanceAt(ctx, fromAddress, nil)
+			if err != nil {
+				return err, nil
+			}
+
+			// Calculate the maximum possible amount to send, taking into account the gas cost
+			maxAmount := new(big.Int).Sub(balance, gasCost)
+
+			// Check if the maxAmount is greater than zero
+			if maxAmount.Cmp(big.NewInt(0)) > 0 {
+				fmt.Printf("Sending the maximum possible amount: %s\n", maxAmount.String())
+				mr.Amount = maxAmount
+				return e.completeTransfer(mr, privateKey)
+			} else {
+				fmt.Println("Insufficient funds, retrying with default payment private key")
+				return e.completeTransferWithPrivateKey(mr)
+			}
 		}
 		return err, nil
 	}
@@ -418,4 +472,214 @@ func (e *PartyShim) burn(mr MintRequest) error {
 	fmt.Printf("burn tx sent: %s", tx.Hash().Hex())
 
 	return nil
+}
+
+// completeTransferWithPrivateKey
+func (e *PartyShim) completeTransferWithPrivateKey(mr MintRequest) (error, *string) {
+	ctx := context.Background()
+	// initialize the Party Chain nodes.
+	partyclient, err := ethclient.Dial(e.RPCURL2)
+	if err != nil {
+		return err, nil
+	}
+
+	// check the connection status of the ethclinet
+	i, err := partyclient.PeerCount(ctx)
+	if err != nil {
+		return err, nil
+	}
+
+	fmt.Println("Peer Count: ", i)
+
+	privateKey := e.defaultPaymentKey
+	publicKey := e.defaultPaymentKey.Public()
+	publicKeyECDSA, ok := publicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return errors.New("cannot assert type: publicKey is not of type *ecdsa.PublicKey"), nil
+	}
+
+	fromAddress := crypto.PubkeyToAddress(*publicKeyECDSA)
+	nonce, err := partyclient.PendingNonceAt(ctx, fromAddress)
+	if err != nil {
+		return err, nil
+	}
+
+	// Get suggested gas price
+	gasPrice, err := partyclient.SuggestGasPrice(context.Background())
+	if err != nil {
+		return err, nil
+	}
+
+	toadr := common.HexToAddress(mr.ToAddress)
+
+	// Estimate gas limit for the specific transaction
+	msg := ethereum.CallMsg{
+		From:     fromAddress,
+		To:       &toadr,
+		Value:    mr.Amount,
+		Data:     []byte{},
+		GasPrice: gasPrice,
+	}
+
+	estimatedGasLimit, err := partyclient.EstimateGas(ctx, msg)
+	if err != nil {
+		return err, nil
+	}
+
+	// Add a buffer to the estimated gas limit (e.g., 10%)
+	bufferedGasLimit := uint64(float64(estimatedGasLimit) * 1.1)
+
+	// Calculate gas cost
+	gasLimitBigInt := new(big.Int).SetUint64(bufferedGasLimit)
+	gasPriceBigInt := new(big.Int).SetUint64(gasPrice.Uint64())
+	gasCost := new(big.Int).Mul(gasLimitBigInt, gasPriceBigInt)
+
+	// Deduct gas cost from the amount
+	newAmt := new(big.Int).Sub(mr.Amount, gasCost)
+	fmt.Println("new amount: ", newAmt)
+
+	if newAmt.Cmp(big.NewInt(0)) < 0 {
+		return errors.New("insufficient funds for gas * price + value"), nil
+	}
+
+	// set chain id
+	chainID, err := partyclient.ChainID(ctx)
+	if err != nil {
+		return err, nil
+	}
+	toAddress := common.HexToAddress(mr.ToAddress)
+	var data []byte
+	tx := types.NewTransaction(nonce, toAddress, newAmt, bufferedGasLimit, gasPrice, data)
+
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), privateKey)
+	if err != nil {
+		return err, nil
+	}
+
+	err = partyclient.SendTransaction(ctx, signedTx)
+	if err != nil {
+		// Check if the error is due to insufficient funds
+		if strings.Contains(err.Error(), "insufficient funds for gas * price + value") && privateKey != e.defaultPaymentKey {
+			return errors.New("insufficient funds for gas * price + value"), nil
+		}
+		return err, nil
+	}
+
+	fmt.Printf("transfer tx sent: %s on chain id: %s to address: %s from address: %s", signedTx.Hash().Hex(), chainID.String(), toAddress.String(), fromAddress.String())
+	transactionID := signedTx.Hash().Hex()
+
+	// wait for the transaction to be mined
+	for pending := true; pending; _, pending, err = partyclient.TransactionByHash(ctx, signedTx.Hash()) {
+		if err != nil {
+			return err, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Println("transfer tx mined")
+
+	// burn the minted tokens
+	err = e.burn(mr)
+	if err != nil {
+		return err, nil
+	}
+
+	return nil, &transactionID
+}
+
+// completeTransferByPayingMaxAmountPossibleFromAccount
+func (e *PartyShim) completeTransferByPayingMaxAmountPossibleFromAccount(mr MintRequest) (error, *string) {
+	ctx := context.Background()
+	// initialize the Party Chain nodes.
+	partyclient, err := ethclient.Dial(e.RPCURL2)
+	if err != nil {
+		return err, nil
+	}
+	toAddress := common.HexToAddress(mr.ToAddress)
+	nonce, err := partyclient.PendingNonceAt(ctx, toAddress)
+	if err != nil {
+		return err, nil
+	}
+	// set chain id
+	chainID, err := partyclient.ChainID(ctx)
+	if err != nil {
+		return err, nil
+	}
+
+	// check the connection status of the ethclient
+	i, err := partyclient.PeerCount(ctx)
+	if err != nil {
+		return err, nil
+	}
+
+	fmt.Println("Peer Count: ", i)
+
+	// get the public address from the mr.FromPk field
+	pkECDSA, err := crypto.HexToECDSA(mr.FromPK)
+	if err != nil {
+		return err, nil
+	}
+
+	fromAddress := crypto.PubkeyToAddress(pkECDSA.PublicKey)
+
+	// Get suggested gas price
+	gasPrice, err := partyclient.SuggestGasPrice(context.Background())
+	if err != nil {
+		return err, nil
+	}
+
+	estimatedGasLimit := uint64(29000)
+	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(estimatedGasLimit), gasPrice)
+	// Calculate the maximum possible amount to send, taking into account the gas cost
+	maxAmount := new(big.Int).Sub(mr.Amount, gasCost)
+
+	fmt.Println("max amount: ", maxAmount)
+	var data []byte
+	tx := types.NewTransaction(nonce, toAddress, maxAmount, estimatedGasLimit, gasPrice, data)
+
+	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), pkECDSA)
+	if err != nil {
+		return err, nil
+	}
+
+	err = partyclient.SendTransaction(ctx, signedTx)
+	if err != nil {
+		if strings.Contains(err.Error(), "insufficient funds") {
+			// modify the value of the amount to be sent
+			// by subtracting 10% from it
+			// and try again
+			tenPercent := new(big.Int).Mul(mr.Amount, big.NewInt(10))
+			tenPercent = new(big.Int).Div(tenPercent, big.NewInt(100))
+			newAmt := new(big.Int).Sub(mr.Amount, tenPercent)
+			fmt.Println("new amount: ", newAmt)
+			mr.Amount = newAmt
+			return e.completeTransferByPayingMaxAmountPossibleFromAccount(mr)
+		}
+	}
+
+	// wait for the transaction to be mined
+
+	for pending := true; pending; _, pending, err = partyclient.TransactionByHash(ctx, signedTx.Hash()) {
+		if err != nil {
+			return err, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+
+	fmt.Printf("transfer tx sent: %s on chain id: %s to address: %s from address: %s", signedTx.Hash().Hex(), chainID.String(), toAddress.String(), fromAddress.String())
+	transactionID := signedTx.Hash().Hex()
+
+	fmt.Println("transfer tx mined")
+
+	// check the status of the transaction
+	receipt, err := partyclient.TransactionReceipt(ctx, signedTx.Hash())
+	if err != nil {
+		return err, nil
+	}
+
+	if receipt.Status == 0 {
+		return errors.New("transaction failed"), nil
+	}
+
+	return nil, &transactionID
 }
