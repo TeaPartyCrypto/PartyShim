@@ -49,8 +49,7 @@ contract PartyBridge is ERC20, Ownable {
         _dailyMintedAmounts[account] += amount;
     }
 
-    function burn(address account, uint256 amount) external {
-        require(msg.sender == account, "You can only burn tokens from your own account");
+    function burn(address account, uint256 amount) external onlyOwner { // Added burn method
         _burn(account, amount);
     }
 
